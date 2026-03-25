@@ -345,7 +345,7 @@ static const size_t  JFRMaxFrameSize        = 32;
             break;
             
         case NSStreamEventEndEncountered:
-            [self disconnectStream:nil];
+            [self disconnectStream:[self errorWithDetail:@"Stream closed by remote side" code:NSStreamEventEndEncountered]];
             break;
             
         default:
@@ -526,31 +526,38 @@ static const size_t  JFRMaxFrameSize        = 32;
             return;
         }
         if(receivedOpcode == JFROpCodeConnectionClose) {
-            //the server disconnected us
+            // per RFC 6455 5.5.1: closing frames may have no body, so default to code of `JFRCloseCodeNormal`
             uint16_t code = JFRCloseCodeNormal;
+            
+            // per RFC 6455 5.5.1: if there is a body, it must be at least two bytes, so 1 byte is an error
             if(payloadLen == 1) {
                 code = JFRCloseCodeProtocolError;
             }
             else if(payloadLen > 1) {
+                // per RFC 6455 5.5.1: the first two bytes of the body must be a u16 integer in network order
+                // encoding a status code defined in 7.4. Interpret this code as-is.
                 code = CFSwapInt16BigToHost(*(uint16_t *)(buffer+offset) );
-                if(code < 1000 || (code > 1003 && code < 1007) || (code > 1011 && code < 3000)) {
-                    code = JFRCloseCodeProtocolError;
-                }
                 offset += 2;
             }
             
+            NSString *detail = @"Close frame received";
+            
             if(payloadLen > 2) {
+                // per RFC 6455 5.5.1: there may be additional UTF8 encoded data after the status code
                 NSInteger len = payloadLen-2;
                 if(len > 0) {
                     NSData *data = [NSData dataWithBytes:(buffer+offset) length:len];
                     NSString *str = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
-                    if(!str) {
+                    if(str) {
+                        detail = [detail stringByAppendingFormat:@" reason=%@", str];
+                    } else {
                         code = JFRCloseCodeProtocolError;
                     }
                 }
             }
             [self writeError:code];
-            [self doDisconnect:[self errorWithDetail:@"continue frame before a binary or text frame" code:code]];
+            
+            [self doDisconnect:[self errorWithDetail:detail code:code]];
             return;
         }
         if(isControlFrame && payloadLen > 125) {
