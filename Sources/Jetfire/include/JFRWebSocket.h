@@ -58,6 +58,11 @@
  */
 -(void)websocket:(nonnull JFRWebSocket*)socket didReceiveData:(nullable NSData*)data;
 
+/**
+ The websocket got a server ping
+ @param socket is the current socket object.
+ */
+-(void)websocketDidReceivePing:(nonnull JFRWebSocket*)socket;
 @end
 
 @interface JFRWebSocket : NSObject

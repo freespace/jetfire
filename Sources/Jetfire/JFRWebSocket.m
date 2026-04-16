@@ -345,7 +345,12 @@ static const size_t  JFRMaxFrameSize        = 32;
             break;
             
         case NSStreamEventEndEncountered:
-            [self disconnectStream:[self errorWithDetail:@"Stream closed by remote side" code:NSStreamEventEndEncountered]];
+            if (aStream.streamError) {
+                [self disconnectStream:[aStream streamError]];
+            } else {
+                [self disconnectStream:[self errorWithDetail:@"Stream closed by remote side" code:NSStreamEventEndEncountered]];
+            }
+            
             break;
             
         default:
@@ -656,6 +661,12 @@ static const size_t  JFRMaxFrameSize        = 32;
         NSData *data = response.buffer;
         if(response.code == JFROpCodePing) {
             [self dequeueWrite:response.buffer withCode:JFROpCodePong];
+            __weak typeof(self) weakSelf = self;
+            dispatch_async(self.queue,^{
+                if([weakSelf.delegate respondsToSelector:@selector(websocketDidReceivePing:)]) {
+                    [weakSelf.delegate websocketDidReceivePing:weakSelf];
+                }
+            });
         } else if(response.code == JFROpCodeTextFrame) {
             NSString *str = [[NSString alloc] initWithData:response.buffer encoding:NSUTF8StringEncoding];
             if(!str) {
