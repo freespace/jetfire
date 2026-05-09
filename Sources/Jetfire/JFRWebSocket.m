@@ -79,6 +79,7 @@ typedef NS_ENUM(NSUInteger, JFRInternalErrorCode) {
 @property(nonatomic, assign)BOOL isCreated;
 @property(nonatomic, assign)BOOL didDisconnect;
 @property(nonatomic, assign)BOOL certValidated;
+@property(nonatomic, strong, nullable)NSRunLoop *streamRunLoop;
 
 @end
 
@@ -125,7 +126,7 @@ static const size_t  JFRMaxFrameSize        = 32;
         self.inputQueue = [NSMutableArray new];
         self.optProtocols = protocols;
     }
-    
+
     return self;
 }
 /////////////////////////////////////////////////////////////////////////////
@@ -134,7 +135,7 @@ static const size_t  JFRMaxFrameSize        = 32;
     if(self.isCreated) {
         return;
     }
-    
+
     __weak typeof(self) weakSelf = self;
     dispatch_async(self.queue, ^{
         weakSelf.didDisconnect = NO;
@@ -182,13 +183,13 @@ static const size_t  JFRMaxFrameSize        = 32;
 - (NSString *)origin;
 {
     NSString *scheme = [_url.scheme lowercaseString];
-    
+
     if ([scheme isEqualToString:@"wss"]) {
         scheme = @"https";
     } else if ([scheme isEqualToString:@"ws"]) {
         scheme = @"http";
     }
-    
+
     if (_url.port) {
         return [NSString stringWithFormat:@"%@://%@:%@/", scheme, _url.host, _url.port];
     } else {
@@ -206,7 +207,7 @@ static const size_t  JFRMaxFrameSize        = 32;
                                                              url,
                                                              kCFHTTPVersion1_1);
     CFRelease(url);
-    
+
     NSNumber *port = _url.port;
     if (!port) {
         if([self.url.scheme isEqualToString:@"wss"] || [self.url.scheme isEqualToString:@"https"]){
@@ -239,17 +240,17 @@ static const size_t  JFRMaxFrameSize        = 32;
                                          (__bridge CFStringRef)headerWSProtocolName,
                                          (__bridge CFStringRef)protocols);
     }
-   
+
     CFHTTPMessageSetHeaderFieldValue(urlRequest,
                                      (__bridge CFStringRef)headerOriginName,
                                      (__bridge CFStringRef)[self origin]);
-    
+
     for(NSString *key in self.headers) {
         CFHTTPMessageSetHeaderFieldValue(urlRequest,
                                          (__bridge CFStringRef)key,
                                          (__bridge CFStringRef)self.headers[key]);
     }
-    
+
 #if defined(DEBUG)
     NSLog(@"urlRequest = \"%@\"", urlRequest);
 #endif
@@ -273,7 +274,7 @@ static const size_t  JFRMaxFrameSize        = 32;
     CFReadStreamRef readStream = NULL;
     CFWriteStreamRef writeStream = NULL;
     CFStreamCreatePairWithSocketToHost(NULL, (__bridge CFStringRef)self.url.host, [port intValue], &readStream, &writeStream);
-    
+
     self.inputStream = (__bridge_transfer NSInputStream *)readStream;
     self.inputStream.delegate = self;
     self.outputStream = (__bridge_transfer NSOutputStream *)writeStream;
@@ -298,14 +299,29 @@ static const size_t  JFRMaxFrameSize        = 32;
         [self.outputStream setProperty:settings forKey:key];
     }
     self.isRunLoop = YES;
-    [self.inputStream scheduleInRunLoop:[NSRunLoop currentRunLoop] forMode:NSDefaultRunLoopMode];
-    [self.outputStream scheduleInRunLoop:[NSRunLoop currentRunLoop] forMode:NSDefaultRunLoopMode];
+
+    self.streamRunLoop = [NSRunLoop currentRunLoop];
+
+    if (self.streamRunLoop == nil) {
+        // something has gone very wrong
+        [self doDisconnect:[self errorWithDetail:@"Unable to get run-loop" code:NSStreamStatusClosed]];
+        return;
+    }
+
+    [self.inputStream scheduleInRunLoop:self.streamRunLoop forMode:NSDefaultRunLoopMode];
+    [self.outputStream scheduleInRunLoop:self.streamRunLoop forMode:NSDefaultRunLoopMode];
     [self.inputStream open];
     [self.outputStream open];
     size_t dataLen = [data length];
-    [self.outputStream write:[data bytes] maxLength:dataLen];
+
     while (self.isRunLoop) {
-        [[NSRunLoop currentRunLoop] runMode:NSDefaultRunLoopMode beforeDate:[NSDate distantFuture]];
+        if (self.outputStream.hasSpaceAvailable && dataLen > 0) {
+            [self.outputStream write:[data bytes] maxLength:dataLen];
+            dataLen = 0;
+        }
+
+        // the time limit ensures we are never stuck
+        [self.streamRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:dataLen > 0 ? 1 : 60]];
     }
 }
 /////////////////////////////////////////////////////////////////////////////
@@ -327,45 +343,57 @@ static const size_t  JFRMaxFrameSize        = 32;
     switch (eventCode) {
         case NSStreamEventNone:
             break;
-            
+
         case NSStreamEventOpenCompleted:
             break;
-            
+
         case NSStreamEventHasBytesAvailable:
             if(aStream == self.inputStream) {
                 [self processInputStream];
             }
             break;
-            
+
         case NSStreamEventHasSpaceAvailable:
             break;
-            
+
         case NSStreamEventErrorOccurred:
             [self disconnectStream:[aStream streamError]];
             break;
-            
+
         case NSStreamEventEndEncountered:
             if (aStream.streamError) {
                 [self disconnectStream:[aStream streamError]];
             } else {
                 [self disconnectStream:[self errorWithDetail:@"Stream closed by remote side" code:NSStreamEventEndEncountered]];
             }
-            
+
             break;
-            
+
         default:
             break;
     }
 }
 /////////////////////////////////////////////////////////////////////////////
 - (void)disconnectStream:(NSError*)error {
-    [self.writeQueue waitUntilAllOperationsAreFinished];
-    [self.inputStream removeFromRunLoop:[NSRunLoop currentRunLoop] forMode:NSDefaultRunLoopMode];
-    [self.outputStream removeFromRunLoop:[NSRunLoop currentRunLoop] forMode:NSDefaultRunLoopMode];
+    [self disconnectStream:error
+             waitForWrites:YES];
+}
+
+- (void)disconnectStream:(NSError*)error waitForWrites:(BOOL)waitForWrites {
+    if (waitForWrites) {
+        [self.writeQueue waitUntilAllOperationsAreFinished];
+    }
+
+    if (self.streamRunLoop) {
+        [self.inputStream removeFromRunLoop:self.streamRunLoop forMode:NSDefaultRunLoopMode];
+        [self.outputStream removeFromRunLoop:self.streamRunLoop forMode:NSDefaultRunLoopMode];
+    }
+
     [self.outputStream close];
     [self.inputStream close];
     self.outputStream = nil;
     self.inputStream = nil;
+    self.streamRunLoop = nil;
     self.isRunLoop = NO;
     _isConnected = NO;
     self.certValidated = NO;
@@ -533,7 +561,7 @@ static const size_t  JFRMaxFrameSize        = 32;
         if(receivedOpcode == JFROpCodeConnectionClose) {
             // per RFC 6455 5.5.1: closing frames may have no body, so default to code of `JFRCloseCodeNormal`
             uint16_t code = JFRCloseCodeNormal;
-            
+
             // per RFC 6455 5.5.1: if there is a body, it must be at least two bytes, so 1 byte is an error
             if(payloadLen == 1) {
                 code = JFRCloseCodeProtocolError;
@@ -544,9 +572,9 @@ static const size_t  JFRMaxFrameSize        = 32;
                 code = CFSwapInt16BigToHost(*(uint16_t *)(buffer+offset) );
                 offset += 2;
             }
-            
+
             NSString *detail = @"Close frame received";
-            
+
             if(payloadLen > 2) {
                 // per RFC 6455 5.5.1: there may be additional UTF8 encoded data after the status code
                 NSInteger len = payloadLen-2;
@@ -561,7 +589,7 @@ static const size_t  JFRMaxFrameSize        = 32;
                 }
             }
             [self writeError:code];
-            
+
             [self doDisconnect:[self errorWithDetail:detail code:code]];
             return;
         }
@@ -638,14 +666,14 @@ static const size_t  JFRMaxFrameSize        = 32;
             [self.readStack addObject:response];
         }
         [self processResponse:response];
-        
+
         NSInteger step = (offset+len);
         NSInteger extra = bufferLen-step;
         if(extra > 0) {
             [self processExtra:(buffer+step) length:extra];
         }
     }
-    
+
 }
 /////////////////////////////////////////////////////////////////////////////
 - (void)processExtra:(uint8_t*)buffer length:(NSInteger)bufferLen {
@@ -707,7 +735,7 @@ static const size_t  JFRMaxFrameSize        = 32;
         self.writeQueue = [[NSOperationQueue alloc] init];
         self.writeQueue.maxConcurrentOperationCount = 1;
     }
-    
+
     __weak typeof(self) weakSelf = self;
     [self.writeQueue addOperationWithBlock:^{
         if(!weakSelf || !weakSelf.isConnected) {
@@ -737,7 +765,7 @@ static const size_t  JFRMaxFrameSize        = 32;
             uint8_t *mask_key = (buffer + offset);
             (void)SecRandomCopyBytes(kSecRandomDefault, sizeof(uint32_t), (uint8_t *)mask_key);
             offset += sizeof(uint32_t);
-            
+
             for (size_t i = 0; i < dataLength; i++) {
                 buffer[offset] = bytes[i] ^ mask_key[i % sizeof(uint32_t)];
                 offset += 1;

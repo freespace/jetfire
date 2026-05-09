@@ -89,6 +89,16 @@
 - (void)disconnect;
 
 /**
+ A less clean version of disconnect where we disconnect the network stream and do not
+ inform the server that we are going away. Use this when you want the network socket
+ to go away NOW.
+
+ If `waitForWrites` is set, then we will wait for write operations to finish first.
+ Otherwise streams are closed immediately.
+ */
+- (void)disconnectStream:(nullable NSError*)error waitForWrites:(BOOL)waitForWrites;
+
+/**
  write binary based data to the socket.
  @param data the binary data to write.
  */
