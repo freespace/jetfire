@@ -153,6 +153,7 @@
         if(result == kSecTrustResultUnspecified || result == kSecTrustResultProceed) {
 
             if (!self.validateEntireChain) {
+                CFRelease(policy);
                 return true;
             }
             NSInteger trustedCount = 0;
