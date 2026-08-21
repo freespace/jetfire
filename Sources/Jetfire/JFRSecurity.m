@@ -148,26 +148,29 @@
             [collect addObject:CFBridgingRelease(SecCertificateCreateWithData(nil,(__bridge CFDataRef)data))];
         }
         SecTrustSetAnchorCertificates(trust,(__bridge CFArrayRef)collect);
-        SecTrustResultType result = 0;
-        SecTrustEvaluate(trust,&result);
-        if(result == kSecTrustResultUnspecified || result == kSecTrustResultProceed) {
-
-            if (!self.validateEntireChain) {
-                CFRelease(policy);
-                return true;
-            }
-            NSInteger trustedCount = 0;
-            for(NSData *serverData in serverCerts) {
-                for(NSData *certData in self.certificates) {
-                    if([certData isEqualToData:serverData]) {
-                        trustedCount++;
-                        break;
-                    }
+        
+        if (SecTrustEvaluateWithError(trust, nil) == false) {
+            CFRelease(policy);
+            return false;
+        }
+        
+        if (!self.validateEntireChain) {
+            CFRelease(policy);
+            return true;
+        }
+        
+        NSInteger trustedCount = 0;
+        for(NSData *serverData in serverCerts) {
+            for(NSData *certData in self.certificates) {
+                if([certData isEqualToData:serverData]) {
+                    trustedCount++;
+                    break;
                 }
             }
-            if(trustedCount == serverCerts.count) {
-                status = YES;
-            }
+        }
+        
+        if(trustedCount == serverCerts.count) {
+            status = YES;
         }
     }
     
@@ -188,34 +191,43 @@
     
     SecTrustRef trust;
     SecTrustCreateWithCertificates(cert,policy,&trust);
-    SecTrustResultType result = kSecTrustResultInvalid;
-    SecTrustEvaluate(trust,&result);
-    SecKeyRef key = SecTrustCopyPublicKey(trust);
+    if (SecTrustEvaluateWithError(trust, nil) == false) {
+        return NULL;
+    }
+    
+    SecKeyRef key = SecTrustCopyKey(trust);
     CFRelease(trust);
     return key;
 }
 /////////////////////////////////////////////////////////////////////////////
 - (NSArray*)certificateChainForTrust:(SecTrustRef)trust {
     NSMutableArray *collect = [NSMutableArray array];
-    for(int i = 0; i < SecTrustGetCertificateCount(trust); i++) {
-        SecCertificateRef cert = SecTrustGetCertificateAtIndex(trust,i);
-        if(cert) {
-            [collect addObject:CFBridgingRelease(SecCertificateCopyData(cert))];
-        }
+    CFArrayRef certChain_cf = SecTrustCopyCertificateChain(trust);
+    NSArray *certChain = (__bridge  NSArray *)certChain_cf;
+    
+    for (id cert in certChain) {
+        SecCertificateRef cert_cf = (__bridge SecCertificateRef)cert;
+        [collect addObject:CFBridgingRelease(SecCertificateCopyData(cert_cf))];
     }
+
     return collect;
 }
 /////////////////////////////////////////////////////////////////////////////
 - (NSArray*)publicKeyChainForTrust:(SecTrustRef)trust {
     NSMutableArray *collect = [NSMutableArray array];
     SecPolicyRef policy = SecPolicyCreateBasicX509();
-    for(int i = 0; i < SecTrustGetCertificateCount(trust); i++) {
-        SecCertificateRef cert = SecTrustGetCertificateAtIndex(trust,i);
-        SecKeyRef key = [self extractPublicKeyFromCert:cert policy:policy];
+    
+    CFArrayRef certChain_cf = SecTrustCopyCertificateChain(trust);
+    NSArray *certChain = (__bridge  NSArray *)certChain_cf;
+    
+    for (id cert in certChain) {
+        SecCertificateRef cert_cf = (__bridge SecCertificateRef)cert;
+        SecKeyRef key = [self extractPublicKeyFromCert:cert_cf policy:policy];
         if(key) {
             [collect addObject:CFBridgingRelease(key)];
         }
     }
+    
     CFRelease(policy);
     return collect;
 }
