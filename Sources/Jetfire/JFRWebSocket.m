@@ -80,6 +80,8 @@ typedef NS_ENUM(NSUInteger, JFRInternalErrorCode) {
 @property(nonatomic, assign)BOOL didDisconnect;
 @property(nonatomic, assign)BOOL certValidated;
 @property(nonatomic, strong, nullable)NSRunLoop *streamRunLoop;
+@property(nonatomic, weak, nullable)NSThread *streamRunLoopThread;
+@property(nonatomic, assign)BOOL isDisconnectingStream;
 
 @end
 
@@ -126,7 +128,7 @@ static const size_t  JFRMaxFrameSize        = 32;
         self.inputQueue = [NSMutableArray new];
         self.optProtocols = protocols;
     }
-
+    
     return self;
 }
 /////////////////////////////////////////////////////////////////////////////
@@ -135,12 +137,12 @@ static const size_t  JFRMaxFrameSize        = 32;
     if(self.isCreated) {
         return;
     }
-
+    
     __weak typeof(self) weakSelf = self;
     dispatch_async(self.queue, ^{
         weakSelf.didDisconnect = NO;
     });
-
+    
     //everything is on a background thread.
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         weakSelf.isCreated = YES;
@@ -183,13 +185,13 @@ static const size_t  JFRMaxFrameSize        = 32;
 - (NSString *)origin;
 {
     NSString *scheme = [_url.scheme lowercaseString];
-
+    
     if ([scheme isEqualToString:@"wss"]) {
         scheme = @"https";
     } else if ([scheme isEqualToString:@"ws"]) {
         scheme = @"http";
     }
-
+    
     if (_url.port) {
         return [NSString stringWithFormat:@"%@://%@:%@/", scheme, _url.host, _url.port];
     } else {
@@ -207,7 +209,7 @@ static const size_t  JFRMaxFrameSize        = 32;
                                                              url,
                                                              kCFHTTPVersion1_1);
     CFRelease(url);
-
+    
     NSNumber *port = _url.port;
     if (!port) {
         if([self.url.scheme isEqualToString:@"wss"] || [self.url.scheme isEqualToString:@"https"]){
@@ -240,17 +242,17 @@ static const size_t  JFRMaxFrameSize        = 32;
                                          (__bridge CFStringRef)headerWSProtocolName,
                                          (__bridge CFStringRef)protocols);
     }
-
+    
     CFHTTPMessageSetHeaderFieldValue(urlRequest,
                                      (__bridge CFStringRef)headerOriginName,
                                      (__bridge CFStringRef)[self origin]);
-
+    
     for(NSString *key in self.headers) {
         CFHTTPMessageSetHeaderFieldValue(urlRequest,
                                          (__bridge CFStringRef)key,
                                          (__bridge CFStringRef)self.headers[key]);
     }
-
+    
 #if defined(DEBUG)
     NSLog(@"urlRequest = \"%@\"", urlRequest);
 #endif
@@ -274,7 +276,7 @@ static const size_t  JFRMaxFrameSize        = 32;
     CFReadStreamRef readStream = NULL;
     CFWriteStreamRef writeStream = NULL;
     CFStreamCreatePairWithSocketToHost(NULL, (__bridge CFStringRef)self.url.host, [port intValue], &readStream, &writeStream);
-
+    
     self.inputStream = (__bridge_transfer NSInputStream *)readStream;
     self.inputStream.delegate = self;
     self.outputStream = (__bridge_transfer NSOutputStream *)writeStream;
@@ -299,27 +301,28 @@ static const size_t  JFRMaxFrameSize        = 32;
         [self.outputStream setProperty:settings forKey:key];
     }
     self.isRunLoop = YES;
-
+    
     self.streamRunLoop = [NSRunLoop currentRunLoop];
-
+    self.streamRunLoopThread = [NSThread currentThread];
+    
     if (self.streamRunLoop == nil) {
         // something has gone very wrong
         [self doDisconnect:[self errorWithDetail:@"Unable to get run-loop" code:NSStreamStatusClosed]];
         return;
     }
-
+    
     [self.inputStream scheduleInRunLoop:self.streamRunLoop forMode:NSDefaultRunLoopMode];
     [self.outputStream scheduleInRunLoop:self.streamRunLoop forMode:NSDefaultRunLoopMode];
     [self.inputStream open];
     [self.outputStream open];
     size_t dataLen = [data length];
-
+    
     while (self.isRunLoop) {
         if (self.outputStream.hasSpaceAvailable && dataLen > 0) {
             [self.outputStream write:[data bytes] maxLength:dataLen];
             dataLen = 0;
         }
-
+        
         // the time limit ensures we are never stuck
         [self.streamRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:dataLen > 0 ? 1 : 60]];
     }
@@ -343,32 +346,32 @@ static const size_t  JFRMaxFrameSize        = 32;
     switch (eventCode) {
         case NSStreamEventNone:
             break;
-
+            
         case NSStreamEventOpenCompleted:
             break;
-
+            
         case NSStreamEventHasBytesAvailable:
             if(aStream == self.inputStream) {
                 [self processInputStream];
             }
             break;
-
+            
         case NSStreamEventHasSpaceAvailable:
             break;
-
+            
         case NSStreamEventErrorOccurred:
             [self disconnectStream:[aStream streamError]];
             break;
-
+            
         case NSStreamEventEndEncountered:
             if (aStream.streamError) {
                 [self disconnectStream:[aStream streamError]];
             } else {
                 [self disconnectStream:[self errorWithDetail:@"Stream closed by remote side" code:NSStreamEventEndEncountered]];
             }
-
+            
             break;
-
+            
         default:
             break;
     }
@@ -379,7 +382,46 @@ static const size_t  JFRMaxFrameSize        = 32;
              waitForWrites:YES];
 }
 
+- (void)_disconnectStreamImmediate:(NSError *)error {
+    [self disconnectStream:error
+             waitForWrites:NO];
+}
+
 - (void)disconnectStream:(NSError*)error waitForWrites:(BOOL)waitForWrites {
+    if ([NSThread currentThread] != self.streamRunLoopThread) {
+        // 112802 - only perform disconnect on the same thread as the run loop to avoid threading issues.
+        // Per documentaiton:
+        //     Adding an input source or timer to a run loop belonging to a different thread could cause
+        //     your code to crash or behave in an unexpected way.
+        // https://developer.apple.com/library/archive/documentation/Cocoa/Conceptual/Multithreading/RunLoopManagement/RunLoopManagement.html#//apple_ref/doc/uid/10000057i-CH16-SW26
+        if (waitForWrites) {
+            [self performSelector:@selector(disconnectStream:)
+                         onThread:self.streamRunLoopThread
+                       withObject:error
+                    waitUntilDone:YES];
+        } else {
+            [self performSelector:@selector(_disconnectStreamImmediate:)
+                         onThread:self.streamRunLoopThread
+                       withObject:error
+                    waitUntilDone:YES];
+        }
+        
+        return;
+    }
+    
+    if (_isConnected == NO) {
+        return;
+    }
+    
+    // since we force this code to execute on the same thread, we shouldn't need
+    // to synchronize access to `self.isDisconnectingStream`
+    if (self.isDisconnectingStream) {
+        // 112802 - avoid race conditions which may lead to signal-11
+        return;
+    }
+    
+    self.isDisconnectingStream = YES;
+    
     if (waitForWrites) {
         [self.writeQueue waitUntilAllOperationsAreFinished];
     }
