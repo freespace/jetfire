@@ -382,38 +382,22 @@ static const size_t  JFRMaxFrameSize        = 32;
              waitForWrites:YES];
 }
 
-- (void)_disconnectStreamImmediate:(NSError *)error {
-    [self disconnectStream:error
-             waitForWrites:NO];
+- (void)_onThreadDisconnectStreamImmediate:(NSError *)error {
+    [self _onThreadDisconnectStream:error
+                      waitForWrites:NO];
 }
 
-- (void)disconnectStream:(NSError*)error waitForWrites:(BOOL)waitForWrites {
-    if ([NSThread currentThread] != self.streamRunLoopThread) {
-        // 112802 - only perform disconnect on the same thread as the run loop to avoid threading issues.
-        // Per documentaiton:
-        //     Adding an input source or timer to a run loop belonging to a different thread could cause
-        //     your code to crash or behave in an unexpected way.
-        // https://developer.apple.com/library/archive/documentation/Cocoa/Conceptual/Multithreading/RunLoopManagement/RunLoopManagement.html#//apple_ref/doc/uid/10000057i-CH16-SW26
-        if (waitForWrites) {
-            [self performSelector:@selector(disconnectStream:)
-                         onThread:self.streamRunLoopThread
-                       withObject:error
-                    waitUntilDone:YES];
-        } else {
-            [self performSelector:@selector(_disconnectStreamImmediate:)
-                         onThread:self.streamRunLoopThread
-                       withObject:error
-                    waitUntilDone:YES];
-        }
-        
+- (void)_onThreadDisconnectStream:(NSError *)error {
+    [self _onThreadDisconnectStream:error
+                      waitForWrites:YES];
+}
+
+- (void)_onThreadDisconnectStream:(NSError *)error waitForWrites:(BOOL)waitForWrites {
+    if (_isConnected == NO || self.isRunLoop == NO) {
         return;
     }
     
-    if (_isConnected == NO) {
-        return;
-    }
-    
-    // since we force this code to execute on the same thread, we shouldn't need
+    // since we force this code to execute on the run-loop thread, we shouldn't need
     // to synchronize access to `self.isDisconnectingStream`
     if (self.isDisconnectingStream) {
         // 112802 - avoid race conditions which may lead to signal-11
@@ -435,12 +419,42 @@ static const size_t  JFRMaxFrameSize        = 32;
     [self.inputStream close];
     self.outputStream = nil;
     self.inputStream = nil;
+    
     self.streamRunLoop = nil;
+    self.streamRunLoopThread = nil;
     self.isRunLoop = NO;
     _isConnected = NO;
     self.certValidated = NO;
     [self doDisconnect:error];
 }
+
+- (void)disconnectStream:(NSError*)error waitForWrites:(BOOL)waitForWrites {
+    if (_isConnected == NO || self.isRunLoop == NO) {
+        return;
+    }
+    
+    if (self.streamRunLoopThread == nil || self.streamRunLoop == nil) {
+        return;
+    }
+    
+    // 112802 - only perform disconnect on the same thread as the run loop to avoid threading issues.
+    // Per documentaiton:
+    //     Adding an input source or timer to a run loop belonging to a different thread could cause
+    //     your code to crash or behave in an unexpected way.
+    // https://developer.apple.com/library/archive/documentation/Cocoa/Conceptual/Multithreading/RunLoopManagement/RunLoopManagement.html#//apple_ref/doc/uid/10000057i-CH16-SW26
+    if (waitForWrites) {
+        [self performSelector:@selector(_onThreadDisconnectStream:)
+                     onThread:self.streamRunLoopThread
+                   withObject:error
+                waitUntilDone:NO];
+    } else {
+        [self performSelector:@selector(_onThreadDisconnectStreamImmediate:)
+                     onThread:self.streamRunLoopThread
+                   withObject:error
+                waitUntilDone:NO];
+    }
+}
+
 /////////////////////////////////////////////////////////////////////////////
 
 #pragma mark - Stream Processing Methods
