@@ -321,8 +321,10 @@ static const size_t  JFRMaxFrameSize        = 32;
         if (self.outputStream.hasSpaceAvailable && dataLen > 0) {
             NSData *toWrite = [data subdataWithRange:NSMakeRange(written, dataLen)];
             written = [self.outputStream write:[toWrite bytes] maxLength:dataLen];
-            dataLen -= written;
-            NSLog(@"initStreamsWithData: wrote %lu bytes", written);
+            if (written > 0) {
+                dataLen -= written;
+                NSLog(@"initStreamsWithData: wrote %lu bytes", written);
+            }
         }
         NSLog(@"initStreamsWithData: waiting for output buffer space to be available");
         
