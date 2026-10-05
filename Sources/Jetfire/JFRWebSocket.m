@@ -316,15 +316,18 @@ static const size_t  JFRMaxFrameSize        = 32;
     [self.inputStream open];
     [self.outputStream open];
     size_t dataLen = [data length];
-    
+    size_t written = 0;
     while (self.isRunLoop) {
         if (self.outputStream.hasSpaceAvailable && dataLen > 0) {
-            [self.outputStream write:[data bytes] maxLength:dataLen];
-            dataLen = 0;
+            NSData *toWrite = [data subdataWithRange:NSMakeRange(written, dataLen)];
+            written = [self.outputStream write:[toWrite bytes] maxLength:dataLen];
+            dataLen -= written;
+            NSLog(@"initStreamsWithData: wrote %lu bytes", written);
         }
+        NSLog(@"initStreamsWithData: waiting for output buffer space to be available");
         
         // the time limit ensures we are never stuck
-        [self.streamRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:dataLen > 0 ? 1 : 60]];
+        [self.streamRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:dataLen > 0 ? 1 : 10]];
     }
 }
 /////////////////////////////////////////////////////////////////////////////
