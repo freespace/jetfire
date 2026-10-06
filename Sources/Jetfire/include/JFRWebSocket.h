@@ -124,7 +124,7 @@
 - (void)addHeader:(nonnull NSString*)value forKey:(nonnull NSString*)key;
 
 /**
- returns if the socket is conneted or not.
+ returns if the websocket is conneted or not.
  */
 @property(nonatomic, assign, readonly)BOOL isConnected;
 

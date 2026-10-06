@@ -401,7 +401,7 @@ static const size_t  JFRMaxFrameSize        = 32;
 }
 
 - (void)_onThreadDisconnectStream:(NSError *)error waitForWrites:(BOOL)waitForWrites {
-    if (_isConnected == NO || self.isRunLoop == NO) {
+    if (self.isRunLoop == NO) {
         return;
     }
     
@@ -437,11 +437,7 @@ static const size_t  JFRMaxFrameSize        = 32;
 }
 
 - (void)disconnectStream:(NSError*)error waitForWrites:(BOOL)waitForWrites {
-    if (_isConnected == NO || self.isRunLoop == NO) {
-        return;
-    }
-    
-    if (self.streamRunLoopThread == nil || self.streamRunLoop == nil) {
+    if (self.isRunLoop == NO || self.streamRunLoopThread == nil || self.streamRunLoop == nil) {
         return;
     }
     
