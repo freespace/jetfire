@@ -21,6 +21,10 @@
 
 #import "JFRWebSocket.h"
 
+#ifndef Debug
+#define Debug(x) NSLog(x)
+#endif
+
 //get the opCode from the packet
 typedef NS_ENUM(NSUInteger, JFROpCode) {
     JFROpCodeContinueFrame = 0x0,
@@ -323,10 +327,9 @@ static const size_t  JFRMaxFrameSize        = 32;
             written = [self.outputStream write:[toWrite bytes] maxLength:dataLen];
             if (written > 0) {
                 dataLen -= written;
-                NSLog(@"initStreamsWithData: wrote %lu bytes", written);
+                Debug(@"initStreamsWithData: wrote %lu bytes, %lu bytes left", written, dataLen);
             }
         }
-        NSLog(@"initStreamsWithData: waiting for output buffer space to be available");
         
         // the time limit ensures we are never stuck
         [self.streamRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:dataLen > 0 ? 1 : 10]];
