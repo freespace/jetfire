@@ -297,10 +297,8 @@ static const size_t  JFRMaxFrameSize        = 32;
     }
     if(self.selfSignedSSL) {
         NSString *chain = (__bridge_transfer NSString *)kCFStreamSSLValidatesCertificateChain;
-        NSString *peerName = (__bridge_transfer NSString *)kCFStreamSSLValidatesCertificateChain;
         NSString *key = (__bridge_transfer NSString *)kCFStreamPropertySSLSettings;
-        NSDictionary *settings = @{chain: [[NSNumber alloc] initWithBool:NO],
-                                   peerName: [NSNull null]};
+        NSDictionary *settings = @{chain: [[NSNumber alloc] initWithBool:NO]};
         [self.inputStream setProperty:settings forKey:key];
         [self.outputStream setProperty:settings forKey:key];
     }
