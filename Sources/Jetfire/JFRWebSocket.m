@@ -285,23 +285,30 @@ static const size_t  JFRMaxFrameSize        = 32;
     self.inputStream.delegate = self;
     self.outputStream = (__bridge_transfer NSOutputStream *)writeStream;
     self.outputStream.delegate = self;
+    
+    BOOL usingSSL = NO;
+    
     if([self.url.scheme isEqualToString:@"wss"] || [self.url.scheme isEqualToString:@"https"]) {
+        usingSSL = YES;
         [self.inputStream setProperty:NSStreamSocketSecurityLevelNegotiatedSSL forKey:NSStreamSocketSecurityLevelKey];
         [self.outputStream setProperty:NSStreamSocketSecurityLevelNegotiatedSSL forKey:NSStreamSocketSecurityLevelKey];
     } else {
         self.certValidated = YES; //not a https session, so no need to check SSL pinning
     }
+    
     if(self.voipEnabled) {
         [self.inputStream setProperty:NSStreamNetworkServiceTypeVoIP forKey:NSStreamNetworkServiceType];
         [self.outputStream setProperty:NSStreamNetworkServiceTypeVoIP forKey:NSStreamNetworkServiceType];
     }
-    if(self.selfSignedSSL) {
+    
+    if(self.selfSignedSSL && usingSSL) {
         NSString *chain = (__bridge_transfer NSString *)kCFStreamSSLValidatesCertificateChain;
         NSString *key = (__bridge_transfer NSString *)kCFStreamPropertySSLSettings;
         NSDictionary *settings = @{chain: [[NSNumber alloc] initWithBool:NO]};
         [self.inputStream setProperty:settings forKey:key];
         [self.outputStream setProperty:settings forKey:key];
     }
+    
     self.isRunLoop = YES;
     
     self.streamRunLoop = [NSRunLoop currentRunLoop];
