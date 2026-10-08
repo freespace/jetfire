@@ -135,7 +135,7 @@
 @property(nonatomic, assign)BOOL voipEnabled;
 
 /**
- Allows connection to self signed or untrusted WebSocket connection. Useful for development.
+ Allows connection to self-signed or untrusted WebSocket connection. Useful for development.
  Default setting is No.
  */
 @property(nonatomic, assign)BOOL selfSignedSSL;
